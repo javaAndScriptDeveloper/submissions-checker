@@ -1,4 +1,4 @@
-.PHONY: help install dev up down logs test test-integration test-unit migrate migrate-create lint format clean
+.PHONY: help install dev up down logs test test-integration test-unit lint format clean
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -14,7 +14,7 @@ venv: ## Create virtual environment
 	fi
 
 activate: ## Show how to activate virtual environment
-    source .venv/bin/activate
+	source .venv/bin/activate
 
 install: venv ## Install dependencies with uv (creates venv if needed)
 	uv pip install -e ".[dev]"
@@ -23,7 +23,7 @@ dev: ## Start development server with hot reload
 	docker compose up app
 
 up: ## Start all Docker services (postgres and app)
-    docker compose up -d
+	docker compose up -d
 
 down: ## Stop all Docker services
 	docker compose down
@@ -45,18 +45,6 @@ test-unit: ## Run unit tests only
 
 test-watch: ## Run tests in watch mode
 	pytest --watch
-
-migrate: ## Run database migrations (Note: migrations run automatically on app startup)
-	docker compose run --rm app uv run alembic upgrade head
-
-migrate-create: ## Create a new migration (usage: make migrate-create MESSAGE="your message")
-	docker compose run --rm app uv run alembic revision --autogenerate -m "$(MESSAGE)"
-
-migrate-down: ## Rollback last migration
-	docker compose run --rm app uv run alembic downgrade -1
-
-migrate-history: ## Show migration history
-	docker compose run --rm app uv run alembic history
 
 db-shell: ## Open PostgreSQL shell
 	docker compose exec postgres psql -U postgres -d submissions_checker

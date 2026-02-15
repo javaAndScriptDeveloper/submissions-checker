@@ -12,39 +12,82 @@ async def clone_repository(
     repo_url: str,
     target_dir: Path,
     branch: str | None = None,
-    depth: int = 1,
+    depth: int | None = None,
 ) -> None:
     """
-    Clone a Git repository (skeleton).
+    Clone a Git repository to the specified directory.
+
+    Uses subprocess to execute git clone command. Creates parent directories
+    if they don't exist. Supports shallow cloning and specific branch checkout.
 
     Args:
-        repo_url: Repository URL to clone
-        target_dir: Target directory for cloning
-        branch: Branch name to clone (optional)
-        depth: Clone depth (default: 1 for shallow clone)
+        repo_url: HTTPS URL of the repository to clone
+        target_dir: Local path where repo should be cloned
+        branch: Specific branch to clone (optional)
+        depth: Clone depth for shallow clone (optional, e.g., 1 for latest commit only)
 
     Raises:
-        Exception: If cloning fails
+        RuntimeError: If git clone command fails
+
+    Example:
+        await clone_repository(
+            "https://github.com/user/repo.git",
+            Path("/tmp/repos/submission_123"),
+            branch="main",
+            depth=1
+        )
     """
-    logger.info("clone_repository", repo_url=repo_url, target_dir=str(target_dir))
+    logger.info(
+        "cloning_repository",
+        repo_url=repo_url,
+        target_dir=str(target_dir),
+        branch=branch,
+        depth=depth,
+    )
 
-    # TODO: Implement repository cloning
-    # cmd = ["git", "clone", "--depth", str(depth)]
-    # if branch:
-    #     cmd.extend(["--branch", branch])
-    # cmd.extend([repo_url, str(target_dir)])
-    #
-    # process = await asyncio.create_subprocess_exec(
-    #     *cmd,
-    #     stdout=asyncio.subprocess.PIPE,
-    #     stderr=asyncio.subprocess.PIPE,
-    # )
-    # stdout, stderr = await process.communicate()
-    #
-    # if process.returncode != 0:
-    #     raise Exception(f"Git clone failed: {stderr.decode()}")
+    # Ensure target directory parent exists
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    raise NotImplementedError("clone_repository not yet implemented")
+    # Build git clone command
+    cmd = ["git", "clone"]
+
+    if depth is not None:
+        cmd.extend(["--depth", str(depth)])
+
+    if branch is not None:
+        cmd.extend(["--branch", branch])
+
+    cmd.extend([repo_url, str(target_dir)])
+
+    # Execute git clone
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            error_msg = stderr.decode().strip()
+            logger.error(
+                "git_clone_failed",
+                repo_url=repo_url,
+                error=error_msg,
+                return_code=process.returncode,
+            )
+            raise RuntimeError(f"Git clone failed: {error_msg}")
+
+        logger.info(
+            "repository_cloned_successfully",
+            repo_url=repo_url,
+            target_dir=str(target_dir),
+        )
+
+    except Exception as e:
+        logger.error("git_clone_exception", repo_url=repo_url, error=str(e))
+        raise
 
 
 async def checkout_commit(repo_path: Path, commit_sha: str) -> None:

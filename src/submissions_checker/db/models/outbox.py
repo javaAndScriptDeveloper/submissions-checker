@@ -3,11 +3,12 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import DateTime, Index, Integer, String, Text
+from sqlalchemy import DateTime, Enum as SQLEnum, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from submissions_checker.db.models.base import Base, TimestampMixin
+from submissions_checker.db.models.enums import OutboxEventType, OutboxMessageState
 
 
 class OutboxMessage(Base, TimestampMixin):
@@ -17,7 +18,7 @@ class OutboxMessage(Base, TimestampMixin):
     The transactional outbox pattern ensures reliable event processing:
     1. Business logic writes to database + outbox table in same transaction
     2. Background worker polls outbox table for unprocessed messages
-    3. Worker dispatches messages to appropriate handlers (Arq tasks)
+    3. Worker dispatches messages to appropriate handlers
     4. Messages marked as processed on success, retry on failure
     """
 
@@ -25,17 +26,25 @@ class OutboxMessage(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    # Aggregate information (what entity triggered this event)
-    aggregate_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    aggregate_id: Mapped[str] = mapped_column(String(255), nullable=False)
-
     # Event information
-    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    event_type: Mapped[OutboxEventType] = mapped_column(
+        SQLEnum(OutboxEventType, name="outbox_event_type", native_enum=True),
+        nullable=False,
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
     # Processing status
-    processed: Mapped[bool] = mapped_column(default=False, nullable=False, index=True)
-    processed_at: Mapped[datetime | None] = mapped_column(
+    state: Mapped[OutboxMessageState] = mapped_column(
+        SQLEnum(
+            OutboxMessageState,
+            name="outbox_message_state",
+            native_enum=True,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+        default=OutboxMessageState.PENDING,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
@@ -45,26 +54,26 @@ class OutboxMessage(Base, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        # Index for efficient queries of unprocessed messages
-        Index("ix_outbox_messages_unprocessed", "processed", "created_at"),
-        # Index for tracking events by aggregate
-        Index("ix_outbox_messages_aggregate", "aggregate_type", "aggregate_id"),
+        # Composite index for efficient queries by state and event type
+        Index("ix_outbox_messages_state_event_type", "state", "event_type"),
+        # Index for efficient queries of pending messages ordered by creation time
+        Index("ix_outbox_messages_pending", "state", "created_at"),
     )
 
     def __repr__(self) -> str:
         return (
             f"<OutboxMessage(id={self.id}, "
-            f"aggregate={self.aggregate_type}:{self.aggregate_id}, "
             f"event={self.event_type}, "
-            f"processed={self.processed})>"
+            f"state={self.state})>"
         )
 
-    def mark_processed(self) -> None:
-        """Mark the message as successfully processed."""
-        self.processed = True
-        self.processed_at = datetime.now(timezone.utc)
+    def mark_finished(self) -> None:
+        """Mark the message as successfully finished."""
+        self.state = OutboxMessageState.FINISHED
+        self.finished_at = datetime.now(timezone.utc)
 
-    def mark_failed(self, error: str) -> None:
-        """Mark the message as failed and increment retry count."""
+    def mark_error(self, error: str) -> None:
+        """Mark the message as failed and increment retry count for retry."""
+        self.state = OutboxMessageState.ERROR
         self.retry_count += 1
         self.error_message = error

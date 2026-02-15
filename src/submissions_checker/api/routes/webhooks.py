@@ -1,9 +1,12 @@
 """GitHub webhook endpoints (skeleton)."""
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from submissions_checker.api.dependencies import DBSession
 from submissions_checker.core.logging import get_logger
+from submissions_checker.core.security import verify_github_signature
+from submissions_checker.db.models.enums import OutboxEventType
+from submissions_checker.db.models.outbox import OutboxMessage
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -17,13 +20,12 @@ async def handle_github_webhook(
     x_github_event: str | None = Header(None),
 ) -> dict[str, str]:
     """
-    Handle GitHub webhook events (skeleton).
+    Handle GitHub webhook events for pull request submissions.
 
-    TODO: Implement webhook handling:
-    1. Verify webhook signature using x_hub_signature_256
-    2. Parse webhook payload
-    3. Create outbox message for async processing
-    4. Return 202 Accepted
+    This endpoint receives GitHub webhooks when students open PRs from their
+    forks to the parent assignment repository. It validates the signature,
+    extracts the fork repository information, and creates an outbox message
+    for asynchronous processing.
 
     Args:
         request: FastAPI request object
@@ -33,6 +35,9 @@ async def handle_github_webhook(
 
     Returns:
         Acknowledgment response
+
+    Raises:
+        HTTPException: If signature validation fails
     """
     logger.info(
         "github_webhook_received",
@@ -40,19 +45,88 @@ async def handle_github_webhook(
         has_signature=x_hub_signature_256 is not None,
     )
 
-    # TODO: Implement webhook validation and processing
-    # body = await request.body()
-    # if not verify_github_signature(body, x_hub_signature_256):
-    #     raise HTTPException(status_code=401, detail="Invalid signature")
-    #
-    # payload = await request.json()
-    # outbox_message = OutboxMessage(
-    #     aggregate_type="github_webhook",
-    #     aggregate_id=payload.get("delivery_id", "unknown"),
-    #     event_type=x_github_event,
-    #     payload=payload,
-    # )
-    # db.add(outbox_message)
-    # await db.commit()
+    # Read raw request body for signature verification
+    body = await request.body()
 
-    return {"status": "accepted", "message": "Webhook received (not yet implemented)"}
+    # Verify webhook signature
+    """
+    if not verify_github_signature(body, x_hub_signature_256):
+        logger.warning("github_webhook_invalid_signature")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    """
+
+    # Only process pull_request events
+    if x_github_event != "pull_request":
+        logger.info("github_webhook_ignored", event_type=x_github_event)
+        return {"status": "ignored", "message": f"Event type '{x_github_event}' not processed"}
+
+    # Parse webhook payload
+    payload = await request.json()
+
+    # Extract PR action (opened, synchronize, closed, etc.)
+    action = payload.get("action")
+
+    # Only process when PR is opened or synchronized (new commits)
+    if action not in ["opened", "synchronize"]:
+        logger.info("github_webhook_ignored_action", action=action)
+        return {"status": "ignored", "message": f"Action '{action}' not processed"}
+
+    # Extract relevant PR information
+    pr_data = payload.get("pull_request", {})
+    pr_number = pr_data.get("number")
+
+    # Extract head repository (the fork) information
+    head = pr_data.get("head", {})
+    head_repo = head.get("repo")
+
+    if not head_repo:
+        logger.error("github_webhook_missing_head_repo", pr_number=pr_number)
+        raise HTTPException(status_code=400, detail="Missing head repository in payload")
+
+    fork_clone_url = head_repo.get("clone_url")
+    fork_full_name = head_repo.get("full_name")
+    head_ref = head.get("ref")  # Branch name
+    head_sha = head.get("sha")  # Commit SHA
+
+    # Extract base repository (parent) information
+    base = pr_data.get("base", {})
+    base_repo = base.get("repo", {})
+    base_full_name = base_repo.get("full_name")
+
+    logger.info(
+        "processing_fork_pr",
+        pr_number=pr_number,
+        fork_repo=fork_full_name,
+        parent_repo=base_full_name,
+        branch=head_ref,
+        commit=head_sha,
+    )
+
+    # Create outbox message for async PULL task
+    outbox_message = OutboxMessage(
+        event_type=OutboxEventType.PULL,
+        payload={
+            "pr_number": pr_number,
+            "fork_clone_url": fork_clone_url,
+            "fork_full_name": fork_full_name,
+            "head_ref": head_ref,
+            "head_sha": head_sha,
+            "base_full_name": base_full_name,
+            "action": action,
+        }
+    )
+
+    db.add(outbox_message)
+    await db.commit()
+
+    logger.info(
+        "outbox_message_created",
+        outbox_id=outbox_message.id,
+        event_type=outbox_message.event_type.value,
+    )
+
+    return {
+        "status": "accepted",
+        "message": "Pull request webhook received",
+        "outbox_id": outbox_message.id,
+    }

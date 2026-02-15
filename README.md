@@ -23,7 +23,7 @@ The Submissions Checker is a Python-based monolithic application that automates 
 - **Web Framework**: FastAPI (async, modern, OpenAPI documentation)
 - **Database**: PostgreSQL 16+ with asyncpg driver
 - **ORM**: SQLAlchemy 2.0+ with async support
-- **Migrations**: Alembic (runs automatically on app startup)
+- **Migrations**: SQL-based migrations (runs automatically on app startup)
 - **Background Jobs**: APScheduler (in-process async scheduler)
 - **HTTP Client**: httpx (async)
 - **Dependency Management**: uv (fastest Python package manager)
@@ -67,7 +67,7 @@ submissions-checker/
 │   │   └── security.py          # Security utilities
 │   ├── db/                       # Database layer
 │   │   ├── models/              # SQLAlchemy models
-│   │   ├── base.py              # Model imports for Alembic
+│   │   ├── base.py              # Base model class
 │   │   └── session.py           # Session management
 │   ├── services/                 # Business logic services
 │   │   ├── github/              # GitHub API integration
@@ -82,7 +82,8 @@ submissions-checker/
 ├── tests/                        # Test suite
 │   ├── integration/             # Integration tests
 │   └── unit/                    # Unit tests
-├── migrations/                   # Alembic database migrations
+├── migrations/                   # Database migrations
+│   └── sql/                     # SQL migration files
 ├── docker/                       # Dockerfiles
 ├── scripts/                      # Utility scripts
 ├── docker-compose.yml           # Development environment
@@ -209,20 +210,62 @@ make type-check
 make quality
 ```
 
+## Database Migrations
+
+Simple SQL-based migration system.
+
+### How It Works
+
+- Migrations stored in `migrations/sql/`
+- Naming: `{sequence}_{description}.sql` (e.g., `003_create_users.sql`)
+- Run automatically on application startup
+- Tracked in `schema_migrations` table
+- Idempotent: safe to run multiple times
+- Checksums prevent modification of executed migrations
+
+### Creating New Migrations
+
+1. Create SQL file with next sequence number:
+   ```bash
+   touch migrations/sql/003_create_users.sql
+   ```
+
+2. Write SQL DDL:
+   ```sql
+   -- Migration: 003_create_users
+   -- Description: Create users table
+   -- Date: 2026-02-15
+
+   CREATE TABLE IF NOT EXISTS users (
+       id SERIAL PRIMARY KEY,
+       email VARCHAR(255) NOT NULL UNIQUE,
+       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+   );
+
+   CREATE INDEX IF NOT EXISTS idx_users_email
+       ON users(email);
+   ```
+
+3. Restart application - migration runs automatically
+
+### Best Practices
+
+- Use `CREATE TABLE IF NOT EXISTS` for idempotency
+- Use `CREATE INDEX IF NOT EXISTS` for indexes
+- Never modify executed migrations (checksum validation fails)
+- Add comments with migration number, description, and date
+- Test in development first
+- Keep migrations sequential (001, 002, 003...)
+
 ### Database Operations
 
 ```bash
-# Create a new migration
-make migrate-create MESSAGE="Add user table"
+# Migrations run automatically on app startup
+make dev
 
-# Run migrations manually (Note: migrations run automatically on app startup)
-make migrate
-
-# Rollback last migration
-make migrate-down
-
-# View migration history
-make migrate-history
+# View migration status (query schema_migrations table)
+make db-shell
+# Then: SELECT * FROM schema_migrations ORDER BY executed_at;
 
 # Open PostgreSQL shell
 make db-shell
@@ -305,7 +348,7 @@ This is the foundational infrastructure phase. The following are implemented:
 - Docker development environment (2 services: app + postgres)
 - Core application modules (config, logging, database, scheduler, migrations)
 - Database models (base classes, outbox pattern)
-- Alembic migrations (run automatically on startup)
+- SQL-based migrations (run automatically on startup)
 - FastAPI application with health endpoints
 - Service layer skeletons (GitHub, AI, testing)
 - Background job infrastructure (APScheduler, task skeletons)

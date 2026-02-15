@@ -48,10 +48,16 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
 
     # Outbox
-    outbox_batch_size: int = 100
+    outbox_batch_size: int = 1
     outbox_poll_interval: int = 10
     outbox_max_retries: int = 5
     outbox_retry_backoff_seconds: int = 60
+
+    # Repository workspace
+    workspace_dir: str = Field(
+        default="/tmp/repos",
+        description="Directory where cloned repositories are stored"
+    )
 
     @property
     def is_development(self) -> bool:

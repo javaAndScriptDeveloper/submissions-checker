@@ -5,7 +5,7 @@ from submissions_checker.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-async def perform_ai_review(code_data: dict) -> None:
+async def execute_review_task(review_data: dict) -> None:
     """
     Perform AI code review for a submission (skeleton).
 
@@ -15,16 +15,16 @@ async def perform_ai_review(code_data: dict) -> None:
     3. Sends code to AI for review
     4. Parses AI response
     5. Updates submission with review results
-    6. Posts review as PR comment
+    6. Creates NOTIFY outbox message for posting review
 
     Args:
-        code_data: Code data including submission ID
+        review_data: Review data including submission ID
     """
-    submission_id = code_data.get("submission_id")
-    logger.info("perform_ai_review_started", submission_id=submission_id)
+    submission_id = review_data.get("submission_id")
+    logger.info("execute_review_task_started", submission_id=submission_id)
 
     try:
-        # TODO: Implement AI code review
+        # TODO: Implement REVIEW task
         # 1. Fetch submission from database
         # async with get_session() as db:
         #     result = await db.execute(
@@ -48,17 +48,16 @@ async def perform_ai_review(code_data: dict) -> None:
         # submission.status = "review_completed"
         # await db.commit()
         #
-        # 5. Post review to PR
-        # github_client = GitHubClient()
-        # await github_client.post_comment(
-        #     repo=submission.repository_name,
-        #     pr_number=submission.pull_request_number,
-        #     comment=format_ai_review(review),
+        # 5. Create NOTIFY outbox message for posting results
+        # notify_message = OutboxMessage(
+        #     event_type=OutboxEventType.NOTIFY,
+        #     payload={"submission_id": submission.id, "result_type": "review"}
         # )
+        # db.add(notify_message)
+        # await db.commit()
 
-        logger.info("perform_ai_review_completed", submission_id=submission_id)
+        logger.info("execute_review_task_completed", submission_id=submission_id)
 
     except Exception as e:
-        logger.error("perform_ai_review_failed", error=str(e), submission_id=submission_id)
-        # Error handling - could implement retry logic at application level if needed
+        logger.error("execute_review_task_failed", error=str(e), submission_id=submission_id)
         raise

@@ -3,84 +3,124 @@
 import asyncio
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 
 from submissions_checker.core.config import get_settings
 from submissions_checker.core.logging import get_logger
+from submissions_checker.db.models.enums import OutboxEventType, OutboxMessageState
 from submissions_checker.db.models.outbox import OutboxMessage
 from submissions_checker.db.session import get_session
-from submissions_checker.workers.tasks.pr_tasks import process_pr_webhook
-from submissions_checker.workers.tasks.review_tasks import perform_ai_review
-from submissions_checker.workers.tasks.test_tasks import run_cli_tests
+from submissions_checker.workers.tasks.pull_tasks import execute_pull_task
+from submissions_checker.workers.tasks.review_tasks import execute_review_task
+from submissions_checker.workers.tasks.notify_tasks import execute_notify_task
 
 logger = get_logger(__name__)
+
+# PostgreSQL advisory lock ID for outbox processing
+# Using a large prime number to avoid collision with other locks
+OUTBOX_PROCESSOR_LOCK_ID = 7919  # Prime number for lock identification
 
 
 async def process_outbox_messages() -> None:
     """
-    Process unprocessed outbox messages (scheduled job).
+    Process pending outbox messages (scheduled job).
 
     This function runs periodically (every 10 seconds) to:
-    1. Query unprocessed outbox messages
-    2. Dispatch messages to appropriate background tasks
-    3. Mark messages as processed on success
-    4. Handle retry logic on failure
+    1. Acquire PostgreSQL advisory lock (ensures single processor)
+    2. Query pending and error messages (with retry limits)
+    3. Dispatch messages to appropriate background tasks
+    4. Mark messages as FINISHED on success
+    5. Mark messages as ERROR on failure (for retry)
+    6. Release advisory lock
 
     The transactional outbox pattern ensures reliable event processing:
     - Business logic writes to database + outbox table in same transaction
-    - This job polls for unprocessed messages
+    - This job polls for pending/error messages
     - Messages are dispatched to background tasks (via asyncio.create_task)
     - Processing is idempotent and handles retries
+
+    Advisory lock ensures only one processor runs at a time across all instances.
     """
     settings = get_settings()
     logger.info("process_outbox_messages_started")
 
-    processed_count = 0
-    failed_count = 0
+    finished_count = 0
+    error_count = 0
 
     try:
         async with get_session() as db:
-            # Query unprocessed messages (with retry limit)
-            result = await db.execute(
-                select(OutboxMessage)
-                .where(OutboxMessage.processed == False)  # noqa: E712
-                .where(OutboxMessage.retry_count < settings.outbox_max_retries)
-                .order_by(OutboxMessage.created_at.asc())
-                .limit(settings.outbox_batch_size)
+            # Try to acquire PostgreSQL advisory lock (non-blocking)
+            # This ensures only one outbox processor runs at a time
+            lock_result = await db.execute(
+                text("SELECT pg_try_advisory_lock(:lock_id)"),
+                {"lock_id": OUTBOX_PROCESSOR_LOCK_ID}
             )
-            messages = result.scalars().all()
+            lock_acquired = lock_result.scalar()
 
-            logger.info("outbox_messages_fetched", count=len(messages))
+            if not lock_acquired:
+                logger.info(
+                    "outbox_processor_lock_not_acquired",
+                    message="Another processor is already running, skipping this execution"
+                )
+                return
 
-            for message in messages:
-                try:
-                    # Dispatch message to appropriate task based on event type
-                    await dispatch_outbox_message(message)
+            logger.debug("outbox_processor_lock_acquired", lock_id=OUTBOX_PROCESSOR_LOCK_ID)
 
-                    # Mark as processed
-                    message.mark_processed()
-                    processed_count += 1
-
-                except Exception as e:
-                    logger.error(
-                        "outbox_message_dispatch_failed",
-                        message_id=message.id,
-                        event_type=message.event_type,
-                        error=str(e),
+            try:
+                # Query pending and error messages (with retry limit)
+                # Process both PENDING and ERROR states to retry failed messages
+                result = await db.execute(
+                    select(OutboxMessage)
+                    .where(
+                        OutboxMessage.state.in_([OutboxMessageState.PENDING, OutboxMessageState.ERROR])
                     )
+                    .where(OutboxMessage.retry_count < settings.outbox_max_retries)
+                    .order_by(OutboxMessage.created_at.asc())
+                    .limit(settings.outbox_batch_size)
+                )
+                messages = result.scalars().all()
 
-                    # Mark as failed and increment retry count
-                    message.mark_failed(str(e))
-                    failed_count += 1
+                logger.info("outbox_messages_fetched", count=len(messages))
 
-            # Commit all changes (processed and failed messages)
-            await db.commit()
+                for message in messages:
+                    try:
+                        # Dispatch message to appropriate task based on event type
+                        await dispatch_outbox_message(message)
 
-        logger.info(
-            "process_outbox_messages_completed",
-            processed=processed_count,
-            failed=failed_count,
-        )
+                        # Mark as finished
+                        message.mark_finished()
+                        finished_count += 1
+
+                    except Exception as e:
+                        logger.error(
+                            "outbox_message_dispatch_failed",
+                            message_id=message.id,
+                            event_type=message.event_type.value,
+                            state=message.state.value,
+                            retry_count=message.retry_count,
+                            error=str(e),
+                        )
+
+                        # Mark as error and increment retry count
+                        message.mark_error(str(e))
+                        error_count += 1
+
+                # Commit all changes (finished and error messages)
+                await db.commit()
+
+                logger.info(
+                    "process_outbox_messages_completed",
+                    finished=finished_count,
+                    error=error_count,
+                )
+
+            finally:
+                # Always release the advisory lock
+                await db.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": OUTBOX_PROCESSOR_LOCK_ID}
+                )
+                logger.debug("outbox_processor_lock_released", lock_id=OUTBOX_PROCESSOR_LOCK_ID)
 
     except Exception as e:
         logger.error("process_outbox_messages_error", error=str(e))
@@ -99,28 +139,24 @@ async def dispatch_outbox_message(message: OutboxMessage) -> None:
     logger.info(
         "dispatching_outbox_message",
         message_id=message.id,
-        aggregate_type=message.aggregate_type,
-        event_type=message.event_type,
+        event_type=message.event_type.value,
     )
 
     # Route messages to appropriate tasks based on event type
-    if message.event_type == "pr_webhook_received":
-        # Dispatch to PR processing task (fire and forget)
-        asyncio.create_task(process_pr_webhook(message.payload))
+    if message.event_type == OutboxEventType.PULL:
+        asyncio.create_task(execute_pull_task(message.payload))
 
-    elif message.event_type == "tests_requested":
-        # Dispatch to test execution task (fire and forget)
-        asyncio.create_task(run_cli_tests(message.payload))
+    elif message.event_type == OutboxEventType.REVIEW:
+        asyncio.create_task(execute_review_task(message.payload))
 
-    elif message.event_type == "review_requested":
-        # Dispatch to AI review task (fire and forget)
-        asyncio.create_task(perform_ai_review(message.payload))
+    elif message.event_type == OutboxEventType.NOTIFY:
+        asyncio.create_task(execute_notify_task(message.payload))
 
     else:
-        logger.warning(
+        logger.error(
             "unknown_outbox_event_type",
             message_id=message.id,
-            event_type=message.event_type,
+            event_type=message.event_type.value,
         )
         raise ValueError(f"Unknown event type: {message.event_type}")
 
