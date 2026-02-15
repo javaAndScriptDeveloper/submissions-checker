@@ -1,0 +1,119 @@
+"""FastAPI application entry point."""
+
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from submissions_checker.api.routes import health, users, webhooks
+from submissions_checker.core.config import get_settings
+from submissions_checker.core.database import close_db, init_db
+from submissions_checker.core.logging import configure_logging, get_logger
+from submissions_checker.core.migrations import run_migrations
+from submissions_checker.core.scheduler import (
+    init_scheduler,
+    shutdown_scheduler,
+    start_scheduler,
+)
+
+# Configure logging before anything else
+configure_logging()
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """
+    Application lifespan context manager.
+
+    Handles startup and shutdown events:
+    - Startup: Run migrations, initialize database, start scheduler
+    - Shutdown: Stop scheduler, close database connections
+    """
+    settings = get_settings()
+
+    # Startup
+    logger.info("application_starting")
+
+    # 1. Run database migrations
+    logger.info("running_database_migrations")
+    await run_migrations()
+    logger.info("migrations_completed")
+
+    # 2. Initialize database connection pool
+    await init_db()
+    logger.info("database_initialized")
+
+    # 3. Start scheduler (if enabled)
+    if settings.scheduler_enabled:
+        init_scheduler()
+        await start_scheduler()
+    else:
+        logger.info("scheduler_disabled")
+
+    logger.info("application_started")
+
+    yield
+
+    # Shutdown
+    logger.info("application_shutting_down")
+
+    # 1. Shutdown scheduler
+    if settings.scheduler_enabled:
+        await shutdown_scheduler()
+
+    # 2. Close database connections
+    await close_db()
+
+    logger.info("application_shutdown_complete")
+
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    settings = get_settings()
+
+    app = FastAPI(
+        title="Submissions Checker",
+        description="Automated student code submission checker with GitHub integration",
+        version="0.1.0",
+        lifespan=lifespan,
+        debug=settings.debug,
+    )
+
+    # Configure CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Register routers
+    app.include_router(health.router)
+    app.include_router(webhooks.router)
+    app.include_router(users.router)
+
+    logger.info(
+        "application_configured",
+        environment=settings.environment,
+        debug=settings.debug,
+    )
+
+    return app
+
+
+# Create application instance
+app = create_app()
+
+
+@app.get("/")
+async def root() -> dict[str, str]:
+    """Root endpoint with API information."""
+    return {
+        "service": "Submissions Checker",
+        "version": "0.1.0",
+        "status": "running",
+        "docs": "/docs",
+    }
