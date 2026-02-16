@@ -3,19 +3,31 @@
 import shutil
 from pathlib import Path
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from submissions_checker.core.config import get_settings
 from submissions_checker.core.logging import get_logger
+from submissions_checker.db.models import (
+    OutboxMessage,
+    OutboxEventType,
+    Submission,
+    SubmissionStatus,
+)
 
 logger = get_logger(__name__)
 
 
-async def execute_pull_task(pull_data: dict) -> None:
+async def execute_pull_task(db: AsyncSession, pull_data: dict) -> None:
     """
-    Clone fork repository for evaluation.
+    Clone fork repository for evaluation and create REVIEW task.
 
-    This task extracts the fork repository information from the webhook payload
-    and clones it to the configured workspace directory. The cloned repository
-    can later be used for running tests or AI review.
+    This task extracts the fork repository information from the webhook payload,
+    clones it to the configured workspace directory, creates or updates a Submission
+    record, and creates a REVIEW outbox message for the next processing stage.
+
+    All operations are performed within the provided database session transaction,
+    ensuring atomicity with the PULL message state change.
 
     Expected payload structure:
     {
@@ -29,6 +41,7 @@ async def execute_pull_task(pull_data: dict) -> None:
     }
 
     Args:
+        db: Database session for transactional operations
         pull_data: Pull request and repository data from webhook payload
 
     Raises:
@@ -70,10 +83,10 @@ async def execute_pull_task(pull_data: dict) -> None:
         settings = get_settings()
         workspace_base = Path(settings.workspace_dir)
 
-        # Create unique directory for this submission
-        # Using format: workspace_dir/fork_owner/fork_repo/pr_number
+        # Create directory for this submission (simplified path structure without PR number)
+        # Using format: workspace_dir/fork_owner/fork_repo
         fork_owner, fork_repo = fork_full_name.split("/")
-        clone_path = workspace_base / fork_owner / fork_repo / str(pr_number)
+        clone_path = workspace_base / fork_owner / fork_repo
 
         # Remove existing directory if it exists (for PR updates)
         if clone_path.exists():
@@ -91,10 +104,67 @@ async def execute_pull_task(pull_data: dict) -> None:
         )
 
         logger.info(
-            "execute_pull_task_completed",
+            "repository_cloned",
             fork_repo=fork_full_name,
             clone_path=str(clone_path),
             commit=head_sha,
+        )
+
+        # Find or create submission record
+        result = await db.execute(
+            select(Submission).where(
+                Submission.pr_number == pr_number,
+                Submission.fork_full_name == fork_full_name,
+            )
+        )
+        submission = result.scalar_one_or_none()
+
+        if submission is None:
+            # Create new submission
+            submission = Submission(
+                pr_number=pr_number,
+                fork_full_name=fork_full_name,
+                base_full_name=base_full_name,
+                head_ref=head_ref,
+                head_sha=head_sha,
+                github_username=fork_owner,
+                repository_path=str(clone_path),
+                status=SubmissionStatus.CLONING,
+            )
+            db.add(submission)
+            logger.info(
+                "submission_created",
+                pr_number=pr_number,
+                fork_repo=fork_full_name,
+            )
+        else:
+            # Update existing submission for PR updates
+            submission.head_ref = head_ref
+            submission.head_sha = head_sha
+            submission.repository_path = str(clone_path)
+            submission.status = SubmissionStatus.CLONING
+            logger.info(
+                "submission_updated",
+                submission_id=submission.id,
+                pr_number=pr_number,
+            )
+
+        # Flush to get submission.id without committing
+        await db.flush()
+
+        # Create REVIEW outbox message for next processing stage
+        review_message = OutboxMessage(
+            event_type=OutboxEventType.REVIEW,
+            payload={"submission_id": submission.id},
+        )
+        db.add(review_message)
+
+        logger.info(
+            "execute_pull_task_completed",
+            submission_id=submission.id,
+            fork_repo=fork_full_name,
+            clone_path=str(clone_path),
+            review_message_created=True,
         )
 
     except Exception as e:

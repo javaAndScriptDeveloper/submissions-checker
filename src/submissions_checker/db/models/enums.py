@@ -42,3 +42,26 @@ class OutboxMessageState(str, enum.Enum):
     def __str__(self) -> str:
         """Return the string value of the enum."""
         return self.value
+
+
+class SubmissionStatus(str, enum.Enum):
+    """
+    Submission processing status.
+
+    Defines the lifecycle states of a student submission:
+    - PENDING: Submission created, awaiting clone
+    - CLONING: Repository being cloned
+    - REVIEWING: AI review in progress
+    - COMPLETED: All processing complete
+    - FAILED: Processing failed
+    """
+
+    PENDING = "pending"
+    CLONING = "cloning"
+    REVIEWING = "reviewing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    def __str__(self) -> str:
+        """Return the string value of the enum."""
+        return self.value

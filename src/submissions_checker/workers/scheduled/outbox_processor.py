@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from submissions_checker.core.config import get_settings
 from submissions_checker.core.logging import get_logger
@@ -85,7 +86,8 @@ async def process_outbox_messages() -> None:
                 for message in messages:
                     try:
                         # Dispatch message to appropriate task based on event type
-                        await dispatch_outbox_message(message)
+                        # Pass db session for transactional execution
+                        await dispatch_outbox_message(db, message)
 
                         # Mark as finished
                         message.mark_finished()
@@ -126,11 +128,17 @@ async def process_outbox_messages() -> None:
         logger.error("process_outbox_messages_error", error=str(e))
 
 
-async def dispatch_outbox_message(message: OutboxMessage) -> None:
+async def dispatch_outbox_message(db: AsyncSession, message: OutboxMessage) -> None:
     """
-    Dispatch an outbox message to the appropriate background task.
+    Dispatch an outbox message to the appropriate task handler.
+
+    This function executes tasks synchronously (awaiting completion) within the
+    database transaction, ensuring that task side effects (creating Submission
+    records, creating REVIEW messages) are committed atomically with the PULL
+    message state change.
 
     Args:
+        db: Database session for transactional operations
         message: Outbox message to dispatch
 
     Raises:
@@ -143,14 +151,15 @@ async def dispatch_outbox_message(message: OutboxMessage) -> None:
     )
 
     # Route messages to appropriate tasks based on event type
+    # Using await (not asyncio.create_task) to ensure transactional consistency
     if message.event_type == OutboxEventType.PULL:
-        asyncio.create_task(execute_pull_task(message.payload))
+        await execute_pull_task(db, message.payload)
 
     elif message.event_type == OutboxEventType.REVIEW:
-        asyncio.create_task(execute_review_task(message.payload))
+        await execute_review_task(db, message.payload)
 
     elif message.event_type == OutboxEventType.NOTIFY:
-        asyncio.create_task(execute_notify_task(message.payload))
+        await execute_notify_task(db, message.payload)
 
     else:
         logger.error(

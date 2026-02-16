@@ -1,11 +1,13 @@
 """AI code review tasks."""
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from submissions_checker.core.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-async def execute_review_task(review_data: dict) -> None:
+async def execute_review_task(db: AsyncSession, review_data: dict) -> None:
     """
     Perform AI code review for a submission (skeleton).
 
@@ -18,6 +20,7 @@ async def execute_review_task(review_data: dict) -> None:
     6. Creates NOTIFY outbox message for posting review
 
     Args:
+        db: Database session for transactional operations
         review_data: Review data including submission ID
     """
     submission_id = review_data.get("submission_id")

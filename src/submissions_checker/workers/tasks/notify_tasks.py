@@ -1,11 +1,13 @@
 """Notification and result posting tasks."""
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from submissions_checker.core.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-async def execute_notify_task(notify_data: dict) -> None:
+async def execute_notify_task(db: AsyncSession, notify_data: dict) -> None:
     """
     Send notifications and post results (skeleton).
 
@@ -17,6 +19,7 @@ async def execute_notify_task(notify_data: dict) -> None:
     5. Updates submission status
 
     Args:
+        db: Database session for transactional operations
         notify_data: Notification data including submission ID and result type
     """
     submission_id = notify_data.get("submission_id")
