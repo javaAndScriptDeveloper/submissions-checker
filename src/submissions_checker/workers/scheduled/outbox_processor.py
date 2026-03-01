@@ -13,6 +13,7 @@ from submissions_checker.db.models.outbox import OutboxMessage
 from submissions_checker.db.session import get_session
 from submissions_checker.workers.tasks.pull_tasks import execute_pull_task
 from submissions_checker.workers.tasks.review_tasks import execute_review_task
+from submissions_checker.workers.tasks.generate_quiz_tasks import execute_generate_quiz_task
 from submissions_checker.workers.tasks.notify_tasks import execute_notify_task
 
 logger = get_logger(__name__)
@@ -157,6 +158,9 @@ async def dispatch_outbox_message(db: AsyncSession, message: OutboxMessage) -> N
 
     elif message.event_type == OutboxEventType.REVIEW:
         await execute_review_task(db, message.payload)
+
+    elif message.event_type == OutboxEventType.GENERATE_QUIZ:
+        await execute_generate_quiz_task(db, message.payload)
 
     elif message.event_type == OutboxEventType.NOTIFY:
         await execute_notify_task(db, message.payload)

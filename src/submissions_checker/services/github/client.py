@@ -1,5 +1,7 @@
 """GitHub API client for interacting with GitHub."""
 
+import httpx
+
 from submissions_checker.core.config import get_settings
 from submissions_checker.core.logging import get_logger
 
@@ -7,46 +9,35 @@ logger = get_logger(__name__)
 
 
 class GitHubClient:
-    """
-    Client for GitHub API operations (skeleton).
-
-    TODO: Implement GitHub API interactions using PyGithub or httpx:
-    - Authentication with GitHub App credentials
-    - Fetching pull request information
-    - Cloning repositories
-    - Posting comments on PRs
-    - Managing commit statuses
-    """
+    """Client for GitHub API operations."""
 
     def __init__(self) -> None:
         """Initialize GitHub client with configuration."""
         self.settings = get_settings()
-        # TODO: Initialize GitHub client
-        # self.github = Github(app_id=settings.github_app_id, ...)
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Return Authorization headers using the configured GitHub token."""
+        if not self.settings.github_token:
+            raise ValueError("GITHUB_TOKEN is not set in environment configuration")
+        return {
+            "Authorization": f"Bearer {self.settings.github_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
 
     async def get_pull_request(self, repo: str, pr_number: int) -> dict:
-        """
-        Get pull request information (skeleton).
+        """Fetch pull request metadata from the GitHub REST API.
 
         Args:
-            repo: Repository full name (owner/repo)
+            repo: Repository full name (``owner/repo``)
             pr_number: Pull request number
-
-        Returns:
-            Pull request data
         """
         logger.info("get_pull_request", repo=repo, pr_number=pr_number)
-
-        # TODO: Implement PR fetching
-        # pr = self.github.get_repo(repo).get_pull(pr_number)
-        # return {
-        #     "number": pr.number,
-        #     "title": pr.title,
-        #     "head_sha": pr.head.sha,
-        #     "base_ref": pr.base.ref,
-        # }
-
-        raise NotImplementedError("get_pull_request not yet implemented")
+        url = f"{self.settings.github_api_base_url}/repos/{repo}/pulls/{pr_number}"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=self._auth_headers())
+            response.raise_for_status()
+            return response.json()
 
     async def clone_repository(self, repo_url: str, target_dir: str, ref: str) -> None:
         """
@@ -66,21 +57,26 @@ class GitHubClient:
         raise NotImplementedError("clone_repository not yet implemented")
 
     async def post_comment(self, repo: str, pr_number: int, comment: str) -> None:
-        """
-        Post a comment on a pull request (skeleton).
+        """Post a comment on a pull request via the GitHub Issues API.
+
+        GitHub PRs share the Issues comment endpoint — ``pr_number`` is the
+        issue number for the PR.
 
         Args:
-            repo: Repository full name (owner/repo)
-            pr_number: Pull request number
-            comment: Comment text
+            repo: Repository full name (``owner/repo``)
+            pr_number: Pull request / issue number
+            comment: Markdown comment body
         """
         logger.info("post_comment", repo=repo, pr_number=pr_number)
-
-        # TODO: Implement comment posting
-        # pr = self.github.get_repo(repo).get_pull(pr_number)
-        # pr.create_issue_comment(comment)
-
-        raise NotImplementedError("post_comment not yet implemented")
+        url = f"{self.settings.github_api_base_url}/repos/{repo}/issues/{pr_number}/comments"
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                url,
+                headers=self._auth_headers(),
+                json={"body": comment},
+            )
+            response.raise_for_status()
+        logger.info("comment_posted", repo=repo, pr_number=pr_number)
 
     async def update_commit_status(
         self,
@@ -108,8 +104,13 @@ class GitHubClient:
         )
 
         # TODO: Implement commit status update
-        # repository = self.github.get_repo(repo)
-        # commit = repository.get_commit(commit_sha)
-        # commit.create_status(state=state, description=description, context=context)
+        # url = f"{self.settings.github_api_base_url}/repos/{repo}/statuses/{commit_sha}"
+        # async with httpx.AsyncClient() as client:
+        #     response = await client.post(url, headers=self._auth_headers(), json={
+        #         "state": state,
+        #         "description": description,
+        #         "context": context,
+        #     })
+        #     response.raise_for_status()
 
         raise NotImplementedError("update_commit_status not yet implemented")

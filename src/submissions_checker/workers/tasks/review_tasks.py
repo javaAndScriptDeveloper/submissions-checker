@@ -1,66 +1,150 @@
-"""AI code review tasks."""
+"""AI code review tasks using OpenAI and lecture knowledge from the project DB."""
 
+import asyncio
+import json
+import os
+import re
+from pathlib import Path
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from openai import AsyncOpenAI
 
+from submissions_checker.core.config import get_settings
 from submissions_checker.core.logging import get_logger
+from submissions_checker.db.models import (
+    LectureKnowledge,
+    OutboxEventType,
+    OutboxMessage,
+    Submission,
+    SubmissionStatus,
+)
 
 logger = get_logger(__name__)
 
 
-async def execute_review_task(db: AsyncSession, review_data: dict) -> None:
+def extract_lab_id(submission: Submission) -> int:
+    """Extract a numeric lab ID from the submission's head_ref branch name.
+
+    Examples: 'lab_1' -> 1, 'lab-3-feature' -> 3. Falls back to 1 if no
+    number is found.
     """
-    Perform AI code review for a submission (skeleton).
+    match = re.search(r"\d+", submission.head_ref or "")
+    if match:
+        return int(match.group())
+    logger.warning("extract_lab_id_fallback", head_ref=submission.head_ref)
+    return 1
 
-    This task:
-    1. Retrieves submission from database
-    2. Loads code files from cloned repository
-    3. Sends code to AI for review
-    4. Parses AI response
-    5. Updates submission with review results
-    6. Creates NOTIFY outbox message for posting review
 
-    Args:
-        db: Database session for transactional operations
-        review_data: Review data including submission ID
+async def collect_lab_data(path: str) -> tuple[str, str]:
+    """Walk *path* in a thread and return (task_text, code_text).
+
+    Reads README files as the task description and collects .py/.md/.txt
+    source files as student code.
+    """
+    ignore_dirs = {".git", ".github"}
+    allowed_extensions = {".py", ".md", ".txt"}
+
+    if not Path(path).exists():
+        return "Умова завдання не знайдена.", ""
+
+    def _walk() -> tuple[str, str]:
+        task_text = "Умова завдання не знайдена."
+        code_text = ""
+        for root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in ignore_dirs]
+            for file in files:
+                ext = os.path.splitext(file)[1].lower()
+                file_path = os.path.join(root, file)
+                rel_path = os.path.relpath(file_path, path)
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    if file.lower().startswith("readme"):
+                        task_text = content
+                    elif ext in allowed_extensions:
+                        code_text += f"\n--- ФАЙЛ: {rel_path} ---\n{content}\n"
+                except Exception:
+                    continue
+        return task_text, code_text
+
+    return await asyncio.to_thread(_walk)
+
+
+async def execute_review_task(db: AsyncSession, review_data: dict) -> None:
+    """Perform AI code review using OpenAI and RAG from lecture_knowledge table.
+
+    All DB writes occur without an intermediate commit — the outbox processor
+    commits the entire unit of work atomically after this function returns.
     """
     submission_id = review_data.get("submission_id")
     logger.info("execute_review_task_started", submission_id=submission_id)
+    settings = get_settings()
 
-    try:
-        # TODO: Implement REVIEW task
-        # 1. Fetch submission from database
-        # async with get_session() as db:
-        #     result = await db.execute(
-        #         select(Submission).where(Submission.id == submission_id)
-        #     )
-        #     submission = result.scalar_one()
-        #
-        # 2. Load code files
-        # repo_path = Path(f"/tmp/repos/{submission_id}")
-        # code_files = load_code_files(repo_path)
-        #
-        # 3. Send to AI for review
-        # ai_client = AIClient()
-        # review = await ai_client.review_code(
-        #     code=combine_code_files(code_files),
-        #     context=submission.assignment_requirements,
-        # )
-        #
-        # 4. Update submission with review
-        # submission.ai_review = review
-        # submission.status = "review_completed"
-        # await db.commit()
-        #
-        # 5. Create NOTIFY outbox message for posting results
-        # notify_message = OutboxMessage(
-        #     event_type=OutboxEventType.NOTIFY,
-        #     payload={"submission_id": submission.id, "result_type": "review"}
-        # )
-        # db.add(notify_message)
-        # await db.commit()
+    result = await db.execute(select(Submission).where(Submission.id == submission_id))
+    submission = result.scalar_one()
 
-        logger.info("execute_review_task_completed", submission_id=submission_id)
+    submission.status = SubmissionStatus.REVIEWING
 
-    except Exception as e:
-        logger.error("execute_review_task_failed", error=str(e), submission_id=submission_id)
-        raise
+    repo_path = submission.repository_path
+    lab_id = extract_lab_id(submission)
+
+    task_text, code_text = await collect_lab_data(repo_path)
+
+    if not code_text:
+        logger.warning("no_code_found", submission_id=submission_id)
+        code_text = "# Код відсутній"
+
+    theory = "Теорія відсутня."
+    lk_result = await db.execute(
+        select(LectureKnowledge).where(LectureKnowledge.lab_id == lab_id)
+    )
+    lk_row = lk_result.scalar_one_or_none()
+    if lk_row:
+        theory = lk_row.content
+
+    prompt = f"""
+    Ти викладач Python. Перевір лабораторну роботу №{lab_id}.
+
+    Ось затверджена теорія з лекції саме для цієї теми:
+    {theory}
+
+    Умова: {task_text}
+    Код студента: {code_text}
+
+    ВИМОГИ ДО ПИТАНЬ:
+    1. Усі 10 питань мають бути НА ПЕРЕТИНІ теорії та коду студента.
+    2. Питай про застосування теорії в конкретних рядках коду.
+    """
+
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+
+    logger.info("calling_openai", submission_id=submission_id)
+    response = await client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Повертай відповідь ВИНЯТКОВО у форматі JSON: "
+                    '{"questions": [{"question": "Текст", '
+                    '"options": ["А", "Б", "В", "Г"], "correct_answer": "А"}]}'
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+    )
+
+    ai_response_text = response.choices[0].message.content
+    parsed_review = json.loads(ai_response_text)
+
+    submission.ai_review = parsed_review
+    submission.status = SubmissionStatus.COMPLETED
+
+    generate_quiz_message = OutboxMessage(
+        event_type=OutboxEventType.GENERATE_QUIZ,
+        payload={"submission_id": submission.id, "ai_review": parsed_review},
+    )
+    db.add(generate_quiz_message)
+
+    logger.info("execute_review_task_completed", submission_id=submission_id)

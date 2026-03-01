@@ -32,9 +32,13 @@ class Settings(BaseSettings):
 
     # GitHub
     github_webhook_secret: str
+    github_token: str | None = None
     github_app_id: str | None = None
     github_app_private_key_path: str | None = None
     github_api_base_url: str = "https://api.github.com"
+
+    # Google Apps Script
+    google_script_url: str | None = None
 
     # AI Provider
     ai_provider: str = "openai"

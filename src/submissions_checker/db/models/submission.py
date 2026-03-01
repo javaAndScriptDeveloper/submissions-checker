@@ -48,3 +48,6 @@ class Submission(Base, TimestampMixin):
     # Results (populated by REVIEW and TEST tasks)
     test_results: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ai_review: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Google Form link (populated by GENERATE_QUIZ task)
+    quiz_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
