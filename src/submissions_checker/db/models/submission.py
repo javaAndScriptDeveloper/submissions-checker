@@ -51,3 +51,7 @@ class Submission(Base, TimestampMixin):
 
     # Google Form link (populated by GENERATE_QUIZ task)
     quiz_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+    # Quiz scores (populated by quiz-submission callback)
+    quiz_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quiz_max_score: Mapped[int | None] = mapped_column(Integer, nullable=True)

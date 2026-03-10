@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Google Apps Script
     google_script_url: str | None = None
 
+    # Backend base URL (used to build callback URLs for external services)
+    base_url: str = "https://ba36-85-114-192-246.ngrok-free.app"
+
     # AI Provider
     ai_provider: str = "openai"
     openai_api_key: str | None = None

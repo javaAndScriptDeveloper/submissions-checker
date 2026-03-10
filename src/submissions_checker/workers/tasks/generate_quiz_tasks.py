@@ -42,7 +42,8 @@ async def execute_generate_quiz_task(db: AsyncSession, quiz_data: dict) -> None:
     lab_id = int(match.group()) if match else 1
     title = f"Lab {lab_id} Quiz — {submission.github_username}"
 
-    gas_payload = {"title": title, **ai_review}
+    callback_url = f"{settings.base_url}/webhooks/quiz-submission?submission_id={submission_id}"
+    gas_payload = {"title": title, "callback_url": callback_url, **ai_review}
 
     logger.info("sending_to_google_apps_script", submission_id=submission_id, title=title)
     async with httpx.AsyncClient() as client:

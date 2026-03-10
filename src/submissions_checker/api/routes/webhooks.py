@@ -7,6 +7,7 @@ from submissions_checker.core.logging import get_logger
 from submissions_checker.core.security import verify_github_signature
 from submissions_checker.db.models.enums import OutboxEventType
 from submissions_checker.db.models.outbox import OutboxMessage
+from submissions_checker.db.models.submission import Submission
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -130,3 +131,35 @@ async def handle_github_webhook(
         "message": "Pull request webhook received",
         "outbox_id": outbox_message.id,
     }
+
+
+@router.post("/quiz-submission")
+async def handle_quiz_submission(
+    submission_id: int,
+    request: Request,
+    db: DBSession,
+) -> dict[str, str]:
+    """Receive quiz score callback from Google Apps Script.
+
+    Called by the onFormSubmit trigger in the Apps Script after a student
+    submits their quiz. The submission_id is embedded in the callback URL
+    that was passed to the Apps Script when creating the form.
+    """
+    body = await request.json()
+
+    submission = await db.get(Submission, submission_id)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    submission.quiz_score = body.get("score")
+    submission.quiz_max_score = body.get("max_score")
+    await db.commit()
+
+    logger.info(
+        "quiz_submission_recorded",
+        submission_id=submission_id,
+        score=submission.quiz_score,
+        max_score=submission.quiz_max_score,
+    )
+
+    return {"status": "ok"}
