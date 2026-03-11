@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     github_app_private_key_path: str | None = None
     github_api_base_url: str = "https://api.github.com"
 
+    # Quiz grading
+    quiz_pass_threshold: int = 6
+
     # Google Apps Script
     google_script_url: str | None = None
 
@@ -50,6 +53,14 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     ai_max_tokens: int = 2000
     ai_temperature: float = 0.7
+
+    # SMTP (all optional — if smtp_host is unset, email channel is disabled)
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_address: str = "noreply@example.com"
+    smtp_use_tls: bool = True
 
     # Scheduler
     scheduler_enabled: bool = True

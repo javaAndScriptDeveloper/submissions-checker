@@ -15,6 +15,7 @@ from submissions_checker.workers.tasks.pull_tasks import execute_pull_task
 from submissions_checker.workers.tasks.review_tasks import execute_review_task
 from submissions_checker.workers.tasks.generate_quiz_tasks import execute_generate_quiz_task
 from submissions_checker.workers.tasks.notify_tasks import execute_notify_task
+from submissions_checker.workers.tasks.notify_quiz_result_tasks import execute_notify_quiz_result_task
 
 logger = get_logger(__name__)
 
@@ -164,6 +165,9 @@ async def dispatch_outbox_message(db: AsyncSession, message: OutboxMessage) -> N
 
     elif message.event_type == OutboxEventType.NOTIFY:
         await execute_notify_task(db, message.payload)
+
+    elif message.event_type == OutboxEventType.NOTIFY_QUIZ_RESULT:
+        await execute_notify_quiz_result_task(db, message.payload)
 
     else:
         logger.error(

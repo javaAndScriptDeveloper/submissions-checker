@@ -23,6 +23,9 @@ class OutboxEventType(str, enum.Enum):
     # Generate quiz questions from AI review
     GENERATE_QUIZ = "GENERATE_QUIZ"
 
+    # Send quiz result notification to student via email
+    NOTIFY_QUIZ_RESULT = "NOTIFY_QUIZ_RESULT"
+
     def __str__(self) -> str:
         """Return the string value of the enum."""
         return self.value

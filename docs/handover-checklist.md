@@ -134,7 +134,69 @@ Topics to walk through when handing this project over. Work through them roughly
 
 ---
 
-## 15. Key operational concerns
+## 15. Deployment: know your backend URL first
+
+Before deploying to any environment (staging, production) you need a stable public URL for the backend. Everything else depends on it.
+
+**Step 1 — Deploy the Google Apps Script**
+- Open [script.google.com](https://script.google.com), create a new standalone project
+- Paste the contents of `scripts/quiz_form.gs`
+- Deploy → New deployment → type "Web app", execute as yourself, access "Anyone"
+- Copy the deployment URL and set it in `.env`:
+```
+GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/<deploy-id>/exec
+```
+
+**Step 2 — Determine the backend URL** (e.g. `https://submissions.example.com`)
+
+**Step 3 — Set it in config**
+```
+BASE_URL=https://submissions.example.com
+```
+This value is used to build the quiz-submission callback URL that is passed to the Google Apps Script when a form is created (`/webhooks/quiz-submission?submission_id=N`).
+
+**Step 4 — Register it as the GitHub webhook target**
+In the assignment repository → Settings → Webhooks → Add webhook:
+- Payload URL: `https://submissions.example.com/webhooks/github`
+- Content type: `application/json`
+- Secret: same value as `GITHUB_WEBHOOK_SECRET` in `.env`
+- Events: "Pull requests" only
+
+**Step 5 — Deploy**
+Run migrations (they run automatically on startup), then start the app.
+Verify with `GET /health` and check the Executions log in the Apps Script editor after the next student PR.
+
+---
+
+## 16. Email (SMTP) setup
+
+The system sends quiz result emails to students. Email is **disabled by default** — it activates only when `SMTP_HOST` is set.
+
+**Gmail setup (recommended):**
+
+1. Enable **2-Step Verification** on the sending Google account
+2. Go to Google Account → Security → **App Passwords**
+3. Create a new App Password (type: Mail / Other)
+4. Copy the 16-character password Google generates
+
+**Required `.env` values:**
+```
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=kkpi.ai.bot@gmail.com    # must be the account's email address, not a display name
+SMTP_PASSWORD=xxxx xxxx xxxx xxxx      # App Password from step 4 — NOT your regular password
+SMTP_FROM_ADDRESS=kkpi.ai.bot@gmail.com  # same as SMTP_USERNAME for Gmail
+SMTP_USE_TLS=true
+```
+
+Key points:
+- `SMTP_USERNAME` and `SMTP_FROM_ADDRESS` must both be the **email address** of the account
+- Regular account passwords are rejected by Google — App Password is mandatory
+- If `SMTP_HOST` is absent, the email channel is silently skipped (no error)
+
+---
+
+## 17. Key operational concerns
 - [ ] `WORKSPACE_DIR` needs adequate disk space and must be writable; old clones are deleted before re-cloning on PR update
 - [ ] Outbox messages in `error` state after max retries need manual review/reset
 - [ ] Running multiple app instances: set `SCHEDULER_ENABLED=false` on API instances and `SCHEDULER_ENABLED=true` only on dedicated worker instances — the advisory lock provides safety but a single worker instance is simpler
@@ -142,7 +204,7 @@ Topics to walk through when handing this project over. Work through them roughly
 
 ---
 
-## 16. Suggested reading order for the code
+## 18. Suggested reading order for the code
 1. `docs/statuses.md` + `docs/jobs.md`
 2. `core/config.py`
 3. `main.py`

@@ -162,4 +162,17 @@ async def handle_quiz_submission(
         max_score=submission.quiz_max_score,
     )
 
+    # Enqueue async notification so the student receives a pass/fail email
+    notify_message = OutboxMessage(
+        event_type=OutboxEventType.NOTIFY_QUIZ_RESULT,
+        payload={
+            "submission_id": submission_id,
+            "student_email": body.get("student_email", ""),
+            "score": submission.quiz_score,
+            "max_score": submission.quiz_max_score,
+        },
+    )
+    db.add(notify_message)
+    await db.commit()
+
     return {"status": "ok"}
