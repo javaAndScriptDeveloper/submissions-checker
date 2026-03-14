@@ -26,4 +26,4 @@ COPY migrations ./migrations
 EXPOSE 8000
 
 # Run application
-CMD ["uvicorn", "submissions_checker.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn submissions_checker.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
