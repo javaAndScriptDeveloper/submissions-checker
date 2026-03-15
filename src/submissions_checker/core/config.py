@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     ai_max_tokens: int = 2000
     ai_temperature: float = 0.7
 
+    # Resend (https://resend.com) — preferred over SMTP on cloud platforms
+    resend_api_key: str | None = None
+    resend_from_address: str = "noreply@example.com"
+
     # SMTP (all optional — if smtp_host is unset, email channel is disabled)
     smtp_host: str | None = None
     smtp_port: int = 587
