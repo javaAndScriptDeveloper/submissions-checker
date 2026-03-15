@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from submissions_checker.api.dependencies import DBSession
+from submissions_checker.core.config import get_settings
 from submissions_checker.core.logging import get_logger
 from submissions_checker.core.security import verify_github_signature
 from submissions_checker.db.models.enums import OutboxEventType
@@ -150,6 +151,15 @@ async def handle_quiz_submission(
     submission = await db.get(Submission, submission_id)
     if submission is None:
         raise HTTPException(status_code=404, detail="Submission not found")
+
+    settings = get_settings()
+    if submission.quiz_score is not None and submission.quiz_score >= settings.quiz_pass_threshold:
+        logger.info(
+            "quiz_submission_ignored_already_passed",
+            submission_id=submission_id,
+            existing_score=submission.quiz_score,
+        )
+        return {"status": "ignored", "message": "Submission already passed"}
 
     submission.quiz_score = body.get("score")
     submission.quiz_max_score = body.get("max_score")
