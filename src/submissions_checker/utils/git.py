@@ -67,7 +67,12 @@ async def clone_repository(
             stderr=asyncio.subprocess.PIPE,
         )
 
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.communicate()
+            raise RuntimeError(f"Git clone timed out after 30s: {repo_url}")
 
         if process.returncode != 0:
             error_msg = stderr.decode().strip()
