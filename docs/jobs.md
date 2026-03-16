@@ -1,6 +1,6 @@
 # Jobs
 
-The system processes student submissions through a chain of three job types, all driven by the transactional outbox pattern. A background scheduler polls the `outbox_messages` table every 10 seconds and dispatches each pending message to the appropriate handler.
+The system processes student submissions through a pipeline of five job types, all driven by the transactional outbox pattern. A background scheduler polls the `outbox_messages` table every 10 seconds and dispatches each pending message to the appropriate handler.
 
 ## How the outbox works
 
@@ -12,18 +12,38 @@ The system processes student submissions through a chain of three job types, all
 
 ---
 
+## Full pipeline
+
+```
+GitHub webhook
+     ↓
+   PULL  — clone fork, create Submission record
+     ↓
+  REVIEW  — AI generates 10 quiz questions from student code
+     ↓
+GENERATE_QUIZ  — sends questions to Google Apps Script, creates Google Form
+     ↓
+  NOTIFY  — posts quiz link as a comment on the student's GitHub PR
+     ↓
+        [student submits the quiz]
+     ↓
+NOTIFY_QUIZ_RESULT  — sends pass/fail email to the student via Brevo
+```
+
+---
+
 ## PULL
 
 **Trigger:** GitHub webhook (`pull_request` event, actions `opened` or `synchronize`).
+
+**Handler:** `workers/tasks/pull_tasks.py::execute_pull_task`
 
 **What it does:**
 
 1. Reads the fork repository information from the outbox payload.
 2. Shallow-clones the fork branch to `workspace_dir/<fork_owner>/<fork_repo>` on disk. If a clone already exists it is removed first (handles PR updates).
-3. Creates or updates a `Submission` record in the database with the clone path and sets its status to `cloning`.
+3. Creates or updates a `Submission` record with the clone path, sets status to `cloning`.
 4. Creates a `REVIEW` outbox message carrying only the `submission_id`.
-
-All of steps 3–4 happen inside the processor's open database session, so they commit atomically with the PULL message being marked `finished`.
 
 **Payload fields:**
 
@@ -43,16 +63,16 @@ All of steps 3–4 happen inside the processor's open database session, so they 
 
 **Trigger:** Created automatically by the PULL job.
 
-**What it does (planned):**
+**Handler:** `workers/tasks/review_tasks.py::execute_review_task`
+
+**What it does:**
 
 1. Fetches the `Submission` record by `submission_id`.
-2. Loads source files from the cloned repository path.
-3. Sends the code to the AI reviewer.
-4. Stores the review result in `submission.ai_review`.
-5. Updates the submission status to `reviewing`.
-6. Creates a `NOTIFY` outbox message so results are posted back to GitHub.
-
-> **Status:** skeleton — the steps above are stubbed out and not yet implemented.
+2. Reads the student's source files and README from the cloned repository path.
+3. Fetches lecture theory for the relevant lab from the `lecture_knowledge` table (RAG).
+4. Sends a prompt to OpenAI asking it to generate 10 multiple-choice questions at the intersection of the theory and the student's code.
+5. Stores the questions JSON in `submission.ai_review`, sets status to `completed`.
+6. Creates a `GENERATE_QUIZ` outbox message with the questions.
 
 **Payload fields:**
 
@@ -62,23 +82,71 @@ All of steps 3–4 happen inside the processor's open database session, so they 
 
 ---
 
-## NOTIFY
+## GENERATE_QUIZ
 
 **Trigger:** Created automatically by the REVIEW job.
 
-**What it does (planned):**
+**Handler:** `workers/tasks/generate_quiz_tasks.py::execute_generate_quiz_task`
 
-1. Fetches the `Submission` and its results.
-2. Formats the AI review (and/or test results) into a human-readable comment.
-3. Posts the comment to the GitHub PR.
-4. Updates the commit status check on GitHub.
-5. Marks the submission as `completed`.
+**What it does:**
 
-> **Status:** skeleton — not yet implemented.
+1. Reads `ai_review` questions from the payload (no extra DB fetch needed).
+2. POSTs the questions to the Google Apps Script endpoint (`GOOGLE_SCRIPT_URL`), including the callback URL for quiz results (`BASE_URL/webhooks/quiz-submission?submission_id=N`).
+3. Receives the created Google Form URL from the Apps Script response.
+4. Saves the URL to `submission.quiz_url`.
+5. Creates a `NOTIFY` outbox message with the form URL.
 
 **Payload fields:**
 
 | Field | Description |
 |---|---|
 | `submission_id` | Internal `Submission` table PK |
-| `result_type` | `"review"` or `"test"` |
+| `ai_review` | Dict with `questions` array from the REVIEW step |
+
+---
+
+## NOTIFY
+
+**Trigger:** Created automatically by the GENERATE_QUIZ job.
+
+**Handler:** `workers/tasks/notify_tasks.py::execute_notify_task`
+
+**What it does:**
+
+1. Reads `form_url` from the payload.
+2. Fetches the `Submission` record to get the GitHub username, repo, and PR number.
+3. Posts a comment on the student's GitHub PR with the quiz link.
+
+**Payload fields:**
+
+| Field | Description |
+|---|---|
+| `submission_id` | Internal `Submission` table PK |
+| `form_url` | Google Form URL for the student's quiz |
+
+---
+
+## NOTIFY_QUIZ_RESULT
+
+**Trigger:** Created automatically by the `POST /webhooks/quiz-submission` endpoint when Google Apps Script calls back with the student's quiz score.
+
+**Handler:** `workers/tasks/notify_quiz_result_tasks.py::execute_notify_quiz_result_task`
+
+**What it does:**
+
+1. Reads score and student email from the payload.
+2. Fetches the `Submission` record to determine which lab and the student's GitHub username.
+3. Sends a pass or fail email to the student via Brevo.
+   - **Passed** (score ≥ `QUIZ_PASS_THRESHOLD`): congratulations + score.
+   - **Failed**: failure notice + instructions to push a new commit and re-trigger the pipeline.
+
+**Protection:** If a submission already has a passing score in the database, the quiz-submission webhook rejects the update — the score cannot be overwritten once passed.
+
+**Payload fields:**
+
+| Field | Description |
+|---|---|
+| `submission_id` | Internal `Submission` table PK |
+| `student_email` | Student's email address (from the Google Form response) |
+| `score` | Student's quiz score |
+| `max_score` | Maximum possible score |

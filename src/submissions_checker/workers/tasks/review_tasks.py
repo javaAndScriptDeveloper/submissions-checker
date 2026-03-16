@@ -117,11 +117,12 @@ async def execute_review_task(db: AsyncSession, review_data: dict) -> None:
     2. Питай про застосування теорії в конкретних рядках коду.
     """
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=60.0)
 
     logger.info("calling_openai", submission_id=submission_id)
     response = await client.chat.completions.create(
         model=settings.openai_model,
+        max_tokens=settings.ai_max_tokens,
         messages=[
             {
                 "role": "system",

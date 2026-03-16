@@ -50,7 +50,7 @@ function handleCreate(data) {
     var choices = [];
     var options = q.options || [];
     for (var j = 0; j < options.length; j++) {
-      var isCorrect = (options[j] === q.answer);
+      var isCorrect = (options[j] === q.correct_answer);
       choices.push(item.createChoice(options[j], isCorrect));
     }
     item.setChoices(choices);
