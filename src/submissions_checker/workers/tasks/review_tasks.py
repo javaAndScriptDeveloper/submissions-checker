@@ -136,7 +136,20 @@ async def execute_review_task(db: AsyncSession, review_data: dict) -> None:
         ],
     )
 
-    ai_response_text = response.choices[0].message.content
+    ai_response_text = response.choices[0].message.content or ""
+    # Strip markdown code fences that some models add around JSON
+    ai_response_text = ai_response_text.strip()
+    if ai_response_text.startswith("```"):
+        ai_response_text = ai_response_text.split("```")[1]
+        if ai_response_text.startswith("json"):
+            ai_response_text = ai_response_text[4:]
+        ai_response_text = ai_response_text.strip()
+
+    if not ai_response_text:
+        raise ValueError(
+            f"OpenAI returned empty content (finish_reason={response.choices[0].finish_reason})"
+        )
+
     parsed_review = json.loads(ai_response_text)
 
     submission.ai_review = parsed_review

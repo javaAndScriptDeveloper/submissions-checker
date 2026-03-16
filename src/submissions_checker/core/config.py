@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = "gpt-4"
     openai_base_url: str = "https://api.openai.com/v1"
-    ai_max_tokens: int = 2000
+    ai_max_tokens: int = 4000
     ai_temperature: float = 0.7
 
     # Brevo (https://brevo.com) — preferred over SMTP on cloud platforms
